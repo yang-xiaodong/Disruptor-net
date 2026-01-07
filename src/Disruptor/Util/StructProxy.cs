@@ -3,15 +3,40 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
+using System.Runtime.CompilerServices;
+#if NET7_0_OR_GREATER
+using System.Diagnostics.CodeAnalysis;
+#endif
 
 namespace Disruptor.Util;
 
 internal static class StructProxy
 {
-    private static readonly ModuleBuilder _moduleBuilder = AssemblyBuilder.DefineDynamicAssembly(new AssemblyName(nameof(StructProxy) + ".DynamicAssembly"), AssemblyBuilderAccess.Run)
-                                                                          .DefineDynamicModule(nameof(StructProxy));
-
+#if NET6_0_OR_GREATER
+    private static readonly bool _isDynamicCodeSupported = RuntimeFeature.IsDynamicCodeSupported;
+#else
+    private static readonly bool _isDynamicCodeSupported = true;
+#endif
+    private static readonly Lazy<ModuleBuilder?> _moduleBuilderLazy = new(CreateModuleBuilder);
     private static readonly Dictionary<Type, Type?> _proxyTypes = new();
+
+    private static ModuleBuilder? CreateModuleBuilder()
+    {
+        if (!_isDynamicCodeSupported)
+            return null;
+
+        return CreateModuleBuilderCore();
+    }
+
+#if NET7_0_OR_GREATER
+    [RequiresDynamicCode("Dynamic code generation is required for struct proxy creation")]
+#endif
+    private static ModuleBuilder CreateModuleBuilderCore()
+    {
+        return AssemblyBuilder
+            .DefineDynamicAssembly(new AssemblyName(nameof(StructProxy) + ".DynamicAssembly"), AssemblyBuilderAccess.Run)
+            .DefineDynamicModule(nameof(StructProxy));
+    }
 
     public static TInterface CreateProxyInstance<TInterface>(TInterface target)
         where TInterface : class
@@ -21,6 +46,19 @@ internal static class StructProxy
         if (targetType.IsValueType)
             return target;
 
+        // In AOT environments, dynamic code generation is not supported.
+        // Return the original target without proxy wrapping.
+        // This may have a slight performance impact due to virtual method calls,
+        // but maintains full functionality.
+        if (!_isDynamicCodeSupported)
+            return target;
+
+        return CreateProxyInstanceCore(target, targetType);
+    }
+
+    private static TInterface CreateProxyInstanceCore<TInterface>(TInterface target, Type targetType)
+        where TInterface : class
+    {
         Type? proxyType;
         lock (_proxyTypes)
         {
@@ -37,6 +75,9 @@ internal static class StructProxy
         return (TInterface)Activator.CreateInstance(proxyType, target)!;
     }
 
+#if NET7_0_OR_GREATER
+    [RequiresDynamicCode("Dynamic code generation is required for struct proxy creation")]
+#endif
     private static Type? GenerateStructProxyType(Type targetType)
     {
         var interfaceTypes = targetType.GetInterfaces().Where(x => x.IsVisible).ToList();
@@ -44,7 +85,8 @@ internal static class StructProxy
         if (!CanGenerateStructProxy(targetType, interfaceTypes))
             return null;
 
-        var typeBuilder = _moduleBuilder.DefineType($"StructProxy_{targetType.Name}_{Guid.NewGuid():N}", TypeAttributes.Public, typeof(ValueType));
+        var moduleBuilder = _moduleBuilderLazy.Value!;
+        var typeBuilder = moduleBuilder.DefineType($"StructProxy_{targetType.Name}_{Guid.NewGuid():N}", TypeAttributes.Public, typeof(ValueType));
 
         var field = typeBuilder.DefineField("_target", targetType, FieldAttributes.Private);
 
