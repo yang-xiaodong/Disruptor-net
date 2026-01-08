@@ -58,6 +58,30 @@ public abstract class RingBuffer : ICursored
     }
 
     /// <summary>
+    /// AOT 兼容的构造函数：使用预创建的数组，避免反射
+    /// </summary>
+    /// <param name="sequencer">sequencer to handle the ordering of events moving through the RingBuffer.</param>
+    /// <param name="entries">预创建的数组</param>
+    /// <exception cref="ArgumentException">if bufferSize is less than 1 or not a power of 2</exception>
+    protected RingBuffer(ISequencer sequencer, Array entries)
+    {
+        _sequencerDispatcher = new SequencerDispatcher(sequencer);
+        _bufferSize = sequencer.BufferSize;
+
+        if (_bufferSize < 1)
+        {
+            throw new ArgumentException("bufferSize must not be less than 1");
+        }
+        if (!_bufferSize.IsPowerOf2())
+        {
+            throw new ArgumentException("bufferSize must be a power of 2");
+        }
+
+        _entries = entries;
+        _indexMask = _bufferSize - 1;
+    }
+
+    /// <summary>
     /// Gets the size of the buffer.
     /// </summary>
     public int BufferSize => _bufferSize;

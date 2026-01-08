@@ -1,5 +1,9 @@
 ﻿using System;
+using System.Runtime.CompilerServices;
 using Disruptor.Util;
+#if NET6_0_OR_GREATER
+using System.Diagnostics.CodeAnalysis;
+#endif
 
 namespace Disruptor.Processing;
 
@@ -8,6 +12,12 @@ namespace Disruptor.Processing;
 /// </summary>
 public static class EventProcessorFactory
 {
+#if NET6_0_OR_GREATER
+    private static readonly bool _isDynamicCodeSupported = RuntimeFeature.IsDynamicCodeSupported;
+#else
+    private static readonly bool _isDynamicCodeSupported = true;
+#endif
+
     /// <summary>
     /// Create a new <see cref="IEventProcessor{T}"/> with dedicated generic arguments.
     /// </summary>
@@ -25,6 +35,12 @@ public static class EventProcessorFactory
     internal static IEventProcessor<T> Create<T>(IDataProvider<T> dataProvider, SequenceBarrier sequenceBarrier, IEventHandler<T> eventHandler, Type processorType)
         where T : class
     {
+        if (!_isDynamicCodeSupported)
+        {
+            // AOT mode: use simplified EventProcessor
+            return new AotEventProcessor<T>(dataProvider, sequenceBarrier, eventHandler);
+        }
+
         var dataProviderProxy = StructProxy.CreateProxyInstance(dataProvider);
         var publishedSequenceReader = CreatePublishedSequenceReader(sequenceBarrier.Sequencer, sequenceBarrier.DependentSequences);
         var eventHandlerProxy = StructProxy.CreateProxyInstance(eventHandler);
@@ -68,6 +84,12 @@ public static class EventProcessorFactory
     internal static IEventProcessor<T> Create<T>(IDataProvider<T> dataProvider, SequenceBarrier sequenceBarrier, IBatchEventHandler<T> eventHandler, Type processorType)
         where T : class
     {
+        if (!_isDynamicCodeSupported)
+        {
+            // AOT mode: use simplified BatchEventProcessor
+            return new AotBatchEventProcessor<T>(dataProvider, sequenceBarrier, eventHandler);
+        }
+
         var dataProviderProxy = StructProxy.CreateProxyInstance(dataProvider);
         var publishedSequenceReader = CreatePublishedSequenceReader(sequenceBarrier.Sequencer, sequenceBarrier.DependentSequences);
         var eventHandlerProxy = StructProxy.CreateProxyInstance(eventHandler);
@@ -161,6 +183,12 @@ public static class EventProcessorFactory
     internal static IValueEventProcessor<T> Create<T>(IValueDataProvider<T> dataProvider, SequenceBarrier sequenceBarrier, IValueEventHandler<T> eventHandler, Type processorType)
         where T : struct
     {
+        if (!_isDynamicCodeSupported)
+        {
+            // AOT mode: use simplified ValueEventProcessor
+            return new AotValueEventProcessor<T>(dataProvider, sequenceBarrier, eventHandler);
+        }
+
         var dataProviderProxy = StructProxy.CreateProxyInstance(dataProvider);
         var publishedSequenceReader = CreatePublishedSequenceReader(sequenceBarrier.Sequencer, sequenceBarrier.DependentSequences);
         var eventHandlerProxy = StructProxy.CreateProxyInstance(eventHandler);
@@ -178,6 +206,12 @@ public static class EventProcessorFactory
     internal static IIpcEventProcessor<T> Create<T>(IpcRingBuffer<T> dataProvider, SequencePointer sequence, IpcSequenceBarrier sequenceBarrier, IValueEventHandler<T> eventHandler)
         where T : unmanaged
     {
+        if (!_isDynamicCodeSupported)
+        {
+            // AOT mode: use simplified IpcEventProcessor
+            return new AotIpcEventProcessor<T>(dataProvider, sequence, sequenceBarrier, eventHandler);
+        }
+
         var publishedSequenceReader = CreatePublishedSequenceReader(sequenceBarrier);
         var eventHandlerProxy = StructProxy.CreateProxyInstance(eventHandler);
         var onBatchStartInvoker = CreateOnBatchStartEvaluator(eventHandler);
@@ -205,9 +239,28 @@ public static class EventProcessorFactory
 
     internal static bool HasNonDefaultImplementation(Type implementationType, Type interfaceType, string methodName)
     {
-        var interfaceMap = implementationType.GetInterfaceMap(interfaceType);
-        var methodIndex = Array.IndexOf(interfaceMap.InterfaceMethods, interfaceType.GetMethod(methodName));
-        var targetMethod = interfaceMap.TargetMethods[methodIndex];
-        return targetMethod.DeclaringType != interfaceType;
+        // Reflection may fail in AOT environments, default to true
+        if (!_isDynamicCodeSupported)
+            return true;
+
+        try
+        {
+            var interfaceMap = implementationType.GetInterfaceMap(interfaceType);
+            var interfaceMethod = interfaceType.GetMethod(methodName);
+            if (interfaceMethod == null)
+                return false;
+            
+            var methodIndex = Array.IndexOf(interfaceMap.InterfaceMethods, interfaceMethod);
+            if (methodIndex < 0 || methodIndex >= interfaceMap.TargetMethods.Length)
+                return false;
+            
+            var targetMethod = interfaceMap.TargetMethods[methodIndex];
+            return targetMethod.DeclaringType != interfaceType;
+        }
+        catch
+        {
+            // Reflection may fail in AOT environments, default to true to ensure functionality
+            return true;
+        }
     }
 }

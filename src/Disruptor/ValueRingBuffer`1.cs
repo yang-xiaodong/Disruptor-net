@@ -28,12 +28,13 @@ public sealed class ValueRingBuffer<T> : RingBuffer, IValueRingBuffer<T>
 
     /// <summary>
     /// Construct a ValueRingBuffer with the full option set.
+    /// AOT 兼容：直接创建泛型数组，避免使用 Array.CreateInstance 反射
     /// </summary>
     /// <param name="eventFactory">eventFactory to create entries for filling the ring buffer</param>
     /// <param name="sequencer">sequencer to handle the ordering of events moving through the ring buffer.</param>
     /// <exception cref="ArgumentException">if bufferSize is less than 1 or not a power of 2</exception>
     public ValueRingBuffer(Func<T> eventFactory, ISequencer sequencer)
-        : base(sequencer, typeof(T), _bufferPad)
+        : base(sequencer, new T[sequencer.BufferSize + 2 * _bufferPad])
     {
         Fill(eventFactory);
     }
